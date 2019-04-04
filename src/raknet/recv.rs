@@ -13,7 +13,7 @@ pub struct ReceivePart {
 	unrel_seq_index: u32,
 	rel_ord_index: u32,
 	out_of_order_packets: HashMap<u32, Packet>,
-	split_packet_queue: HashMap<u16, Vec<Option<Vec<u8>>>>,
+	split_packet_queue: HashMap<u16, Vec<Option<Box<[u8]>>>>,
 }
 
 impl ReceivePart {
@@ -62,10 +62,10 @@ impl ReceivePart {
 							let mut assembled: Vec<u8> = vec![];
 							for part in parts.iter() {
 								if let Some(x) = part {
-									assembled.extend(x);
+									assembled.extend_from_slice(x);
 								}
 							}
-							rak_packet.data = assembled;
+							rak_packet.data = assembled.into_boxed_slice();
 							o.remove_entry();
 						} else {
 							continue;
@@ -131,11 +131,11 @@ mod tests {
 	use super::super::packet::SplitPacketInfo;
 
 	fn unrel_seq(index: u32) -> RaknetPacket {
-		RaknetPacket { message_number: index, rel_data: UnreliableSequenced(index), split_packet_info: None, data: vec![index as u8] }
+		RaknetPacket { message_number: index, rel_data: UnreliableSequenced(index), split_packet_info: None, data: Box::new([index as u8]) }
 	}
 
 	fn rel_ord(index: u32) -> RaknetPacket {
-		RaknetPacket { message_number: index, rel_data: ReliableOrdered(index), split_packet_info: None, data: vec![index as u8] }
+		RaknetPacket { message_number: index, rel_data: ReliableOrdered(index), split_packet_info: None, data: Box::new([index as u8]) }
 	}
 
 	#[test]
@@ -143,7 +143,7 @@ mod tests {
 		let mut recv = ReceivePart::default();
 		let mut acks = RangeList::new();
 		let rak_packets = vec![
-			RaknetPacket { message_number: 0, rel_data: Unreliable, split_packet_info: None, data: vec![] },
+			RaknetPacket { message_number: 0, rel_data: Unreliable, split_packet_info: None, data: Box::new([]) },
 		];
 		let packets = recv.process_incoming_packets(rak_packets, &mut acks, &mut false);
 		assert_eq!(acks.len(), 0);
@@ -348,7 +348,7 @@ mod tests {
 					index: 0,
 					count: 2,
 				}),
-				data: vec![],
+				data: Box::new([]),
 			},
 		];
 		let packets = recv.process_incoming_packets(rak_packets, &mut acks, &mut false);
@@ -369,7 +369,7 @@ mod tests {
 					index: 1,
 					count: 2,
 				}),
-				data: vec![3, 4, 5],
+				data: Box::new([3, 4, 5]),
 			},
 			RaknetPacket {
 				message_number: 1,
@@ -379,13 +379,13 @@ mod tests {
 					index: 0,
 					count: 2,
 				}),
-				data: vec![0, 1, 2],
+				data: Box::new([0, 1, 2]),
 			},
 		];
 		let packets = recv.process_incoming_packets(rak_packets, &mut acks, &mut false);
 		assert_eq!(acks.len(), 2);
 		assert_eq!(packets.len(), 1);
-		assert_eq!(packets[0].data, vec![0, 1, 2, 3, 4, 5]);
+		assert_eq!(&*packets[0].data, [0, 1, 2, 3, 4, 5]);
 	}
 
 	#[test]
@@ -398,7 +398,7 @@ mod tests {
 				message_number: 0,
 				rel_data: ReliableOrdered(0),
 				split_packet_info: None,
-				data: vec![MessageType::DisconnectNotification as u8],
+				data: Box::new([MessageType::DisconnectNotification as u8]),
 			},
 		];
 		let packets = recv.process_incoming_packets(rak_packets, &mut acks, &mut closed);

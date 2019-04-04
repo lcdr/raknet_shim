@@ -16,7 +16,6 @@ use std::io::Result as Res;
 use std::net::TcpStream as Tcp;
 use std::net::{ToSocketAddrs, UdpSocket};
 
-use endio::LERead;
 use endio::LEWrite;
 
 use crate::BUF;
@@ -26,8 +25,10 @@ use self::tls::Tcp;
 
 /// Buffer for keeping packets that were only read in part.
 struct BufferOffset {
-	buffer: Vec<u8>,
+	reading_length: bool,
 	offset: usize,
+	length: [u8; 4],
+	buffer: Box<[u8]>,
 }
 
 pub struct Connection {
@@ -35,7 +36,7 @@ pub struct Connection {
 	udp: UdpSocket,
 	seq_num_recv: u32,
 	seq_num_send: u32,
-	packet: Option<BufferOffset>,
+	packet: BufferOffset,
 }
 
 impl Connection {
@@ -50,7 +51,7 @@ impl Connection {
 			udp,
 			seq_num_recv: 0,
 			seq_num_send: 0,
-			packet: None,
+			packet: BufferOffset { reading_length: true, offset: 0, length: [0; 4], buffer: Box::new([]) },
 		})
 	}
 
@@ -61,7 +62,7 @@ impl Connection {
 				Unreliable => {
 					let mut vec = Vec::with_capacity(packet.data.len()+1);
 					vec.write(0u8)?;
-					vec.write(&packet.data)?;
+					vec.write(&*packet.data)?;
 					self.udp.send(&vec)?;
 				}
 				UnreliableSequenced => {
@@ -70,7 +71,7 @@ impl Connection {
 					let mut vec = Vec::with_capacity(packet.data.len()+1+4);
 					vec.write(1u8)?;
 					vec.write(seq_num)?;
-					vec.write(&packet.data)?;
+					vec.write(&*packet.data)?;
 					self.udp.send(&vec)?;
 				}
 				_ => {
@@ -106,18 +107,20 @@ impl Connection {
 
 	/// Receive packets from UDP.
 	fn receive_udp(&mut self, packets: &mut Vec<Packet>) -> Res<()> {
+		use endio::LERead;
+
 		loop {
 			let len = self.udp.recv( unsafe {&mut BUF})?;
 			let reader = unsafe { &mut &BUF[..] };
 			let rel: u8 = reader.read()?;
 			if rel == 0 {
-				let packet = Packet { reliability: Unreliable, data: unsafe { BUF[1..len].to_vec() }};
+				let packet = Packet { reliability: Unreliable, data: unsafe { Box::from(&BUF[1..len]) }};
 				packets.push(packet);
 			} else if rel == 1 {
 				let seq_num: u32 = reader.read()?;
 				if seq_num.wrapping_sub(self.seq_num_recv) < u32::max_value() / 2 {
 					self.seq_num_recv = seq_num.wrapping_add(1);
-					let packet = Packet { reliability: UnreliableSequenced, data: unsafe { BUF[5..len].to_vec() }};
+					let packet = Packet { reliability: UnreliableSequenced, data: unsafe { Box::from(&BUF[5..len]) }};
 					packets.push(packet);
 				}
 			} else { panic!(); }
@@ -126,35 +129,35 @@ impl Connection {
 
 	/// Receive packets from TCP.
 	fn receive_tcp(&mut self, packets: &mut Vec<Packet>) -> Res<()> {
-		let (mut buffer, mut offset) = match self.packet.take() {
-			Some(x) => (x.buffer, x.offset),
-			None => (self.read_len()?, 0),
-		};
-		loop {
-			while offset < buffer.len() {
-				match io::Read::read(&mut self.tcp, &mut buffer[offset..]) {
-					Ok(n) => offset += n,
-					Err(e) => {
-						self.packet = Some(BufferOffset { buffer, offset });
-						return Err(e);
-					}
-				}
-			}
-			let pkt = Packet { data: buffer, reliability: ReliableOrdered };
-			packets.push(pkt);
-			buffer = self.read_len()?;
-			offset = 0;
-		}
-	}
+		use std::io::Read;
 
-	fn read_len(&mut self) -> Res<Vec<u8>> {
-		let mut tmp = [0; 4];
-		let r = self.tcp.peek(&mut tmp)?;
-		if r < 4 {
-			return Err(io::Error::new(io::ErrorKind::WouldBlock, "could not fully read len"))
+		loop {
+			if self.packet.reading_length {
+				while self.packet.offset < self.packet.length.len() {
+					let n = self.tcp.read(&mut self.packet.length[self.packet.offset..])?;
+					if n == 0 {
+						return Err(io::Error::new(io::ErrorKind::WouldBlock, ""));
+					}
+					self.packet.offset += n;
+				}
+				self.packet.reading_length = false;
+				self.packet.offset = 0;
+				self.packet.buffer = vec![0; u32::from_le_bytes(self.packet.length) as usize].into_boxed_slice();
+			}
+			while self.packet.offset < self.packet.buffer.len() {
+				let n = self.tcp.read(&mut self.packet.buffer[self.packet.offset..])?;
+				if n == 0 {
+					return Err(io::Error::new(io::ErrorKind::WouldBlock, ""));
+				}
+				self.packet.offset += n;
+			}
+			self.packet.reading_length = true;
+			self.packet.offset = 0;
+			let mut b = Box::from(&[][..]);
+			std::mem::swap(&mut self.packet.buffer, &mut b);
+			let pkt = Packet { data: b, reliability: ReliableOrdered };
+			packets.push(pkt);
 		}
-		let len: u32 = self.tcp.read()?;
-		Ok(vec![0; len as usize])
 	}
 }
 
@@ -183,7 +186,7 @@ mod tests_tcp {
 		server.write(2u16).unwrap();
 		let packets = client.receive().unwrap();
 		assert_eq!(packets[0].reliability, ReliableOrdered);
-		assert_eq!(packets[0].data, b"\x01\x00\x02\x00");
+		assert_eq!(&*packets[0].data, b"\x01\x00\x02\x00");
 	}
 
 	#[test]
@@ -228,13 +231,13 @@ mod tests_tcp {
 		server.write(2u16).unwrap();
 		let packets = client.receive().unwrap();
 		assert_eq!(packets.len(), 1);
-		assert_eq!(packets[0].data, b"\x01\x00\x02\x00");
+		assert_eq!(&*packets[0].data, b"\x01\x00\x02\x00");
 	}
 
 	#[test]
 	fn send_ok() {
 		let (mut client, mut server) = setup();
-		let packets = vec![Packet { reliability: ReliableOrdered, data: vec![42] }];
+		let packets = vec![Packet { reliability: ReliableOrdered, data: Box::new([42]) }];
 		client.send(packets).unwrap();
 		assert_eq!(server.read::<u32>().unwrap(), 1);
 		assert_eq!(server.read::<u8>().unwrap(), 42);
@@ -244,7 +247,7 @@ mod tests_tcp {
 	fn send_shutdown() {
 		let (mut client, server) = setup();
 		server.shutdown(Shutdown::Both).unwrap();
-		let packets = vec![Packet { reliability: ReliableOrdered, data: vec![42] }];
+		let packets = vec![Packet { reliability: ReliableOrdered, data: Box::new([42]) }];
 		assert_eq!(client.send(packets).unwrap_err().kind(), io::ErrorKind::ConnectionAborted);
 	}
 }
@@ -270,7 +273,7 @@ mod tests_udp {
 		server.send_to(data, client.udp.local_addr().unwrap()).unwrap();
 		let packets = client.receive().unwrap();
 		assert_eq!(packets[0].reliability, Unreliable);
-		assert_eq!(packets[0].data, b"hello");
+		assert_eq!(&*packets[0].data, b"hello");
 	}
 
 	#[test]
@@ -280,7 +283,7 @@ mod tests_udp {
 		server.send_to(data, client.udp.local_addr().unwrap()).unwrap();
 		let packets = client.receive().unwrap();
 		assert_eq!(packets[0].reliability, UnreliableSequenced);
-		assert_eq!(packets[0].data, b"hello");
+		assert_eq!(&*packets[0].data, b"hello");
 	}
 
 	#[test]
@@ -301,7 +304,7 @@ mod tests_udp {
 		server.send_to(data, client.udp.local_addr().unwrap()).unwrap();
 		let packets = client.receive().unwrap();
 		assert_eq!(packets[0].reliability, UnreliableSequenced);
-		assert_eq!(packets[0].data, b"hello");
+		assert_eq!(&*packets[0].data, b"hello");
 	}
 
 	#[test]
@@ -312,13 +315,13 @@ mod tests_udp {
 		server.send_to(data, client.udp.local_addr().unwrap()).unwrap();
 		let packets = client.receive().unwrap();
 		assert_eq!(packets[0].reliability, UnreliableSequenced);
-		assert_eq!(packets[0].data, b"hello");
+		assert_eq!(&*packets[0].data, b"hello");
 	}
 
 	#[test]
 	fn send_unrel() {
 		let (mut client, server) = setup();
-		let packets = vec![Packet { reliability: Unreliable, data: b"hello".to_vec() }];
+		let packets = vec![Packet { reliability: Unreliable, data: Box::new(*b"hello") }];
 		client.send(packets).unwrap();
 		let len = server.recv_from(unsafe { &mut BUF }).unwrap().0;
 		assert_eq!(unsafe { &BUF[..len] }, b"\x00hello");
@@ -328,7 +331,7 @@ mod tests_udp {
 	fn send_unrel_seq() {
 		let (mut client, server) = setup();
 		client.seq_num_send = u32::max_value();
-		let packets = vec![Packet { reliability: UnreliableSequenced, data: b"hello".to_vec() }];
+		let packets = vec![Packet { reliability: UnreliableSequenced, data: Box::new(*b"hello") }];
 		client.send(packets).unwrap();
 		let len = server.recv_from(unsafe { &mut BUF }).unwrap().0;
 		assert_eq!(unsafe { &BUF[..len] }, b"\x01\xff\xff\xff\xffhello");

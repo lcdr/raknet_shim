@@ -46,10 +46,6 @@ impl Tcp {
 		self.stream.sock.local_addr()
 	}
 
-	pub fn peek(&self, buf: &mut [u8]) -> Res<usize> {
-		self.stream.sock.peek(buf)
-	}
-
 	pub fn set_nonblocking(&self, nonblocking: bool) -> Res<()> {
 		self.stream.sock.set_nonblocking(nonblocking)
 	}

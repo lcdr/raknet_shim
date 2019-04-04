@@ -64,6 +64,6 @@ impl Connection {
 
 impl Drop for Connection {
 	fn drop(&mut self) {
-		let _ = self.send(vec![Packet { reliability: Unreliable, data: vec![DisconnectNotification as u8] }]);
+		let _ = self.send(vec![Packet { reliability: Unreliable, data: Box::from([DisconnectNotification as u8]) }]);
 	}
 }

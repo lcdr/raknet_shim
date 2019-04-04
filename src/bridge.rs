@@ -41,7 +41,7 @@ pub enum Reliability {
 /// Packet data and reliability: The abstract data that connections return from receiving and accept for sending.
 pub struct Packet {
 	pub reliability: Reliability,
-	pub data: Vec<u8>,
+	pub data: Box<[u8]>,
 }
 
 /// Shims are managed by the main function, so if they need to be modified the command has to be relayed back through this.
