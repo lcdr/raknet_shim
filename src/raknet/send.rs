@@ -100,7 +100,7 @@ impl SendPart {
 						message_number,
 						rel_data: rel_data.clone(),
 						split_packet_info: info,
-						data: chunk.to_vec(),
+						data: Box::from(chunk),
 					});
 				}
 			} else {
@@ -186,8 +186,8 @@ mod tests {
 	fn message_number() {
 		let mut send = send();
 		let packets = vec![
-			Packet { data: vec![], reliability: R::Unreliable },
-			Packet { data: vec![], reliability: R::Unreliable },
+			Packet { data: Box::new([]), reliability: R::Unreliable },
+			Packet { data: Box::new([]), reliability: R::Unreliable },
 		];
 		let rak_packets = send.process_outgoing_packets(packets);
 		assert_eq!(rak_packets[0].message_number, 0);
@@ -198,8 +198,8 @@ mod tests {
 	fn unrel_seq_index() {
 		let mut send = send();
 		let packets = vec![
-			Packet { data: vec![], reliability: R::UnreliableSequenced },
-			Packet { data: vec![], reliability: R::UnreliableSequenced },
+			Packet { data: Box::new([]), reliability: R::UnreliableSequenced },
+			Packet { data: Box::new([]), reliability: R::UnreliableSequenced },
 		];
 		let rak_packets = send.process_outgoing_packets(packets);
 		if let RD::UnreliableSequenced(i) = rak_packets[0].rel_data {
@@ -214,8 +214,8 @@ mod tests {
 	fn rel_ord_index() {
 		let mut send = send();
 		let packets = vec![
-			Packet { data: vec![], reliability: R::ReliableOrdered },
-			Packet { data: vec![], reliability: R::ReliableOrdered },
+			Packet { data: Box::new([]), reliability: R::ReliableOrdered },
+			Packet { data: Box::new([]), reliability: R::ReliableOrdered },
 		];
 		let rak_packets = send.process_outgoing_packets(packets);
 		if let RD::ReliableOrdered(i) = rak_packets[0].rel_data {
@@ -230,7 +230,7 @@ mod tests {
 	fn split_packet() {
 		let mut send = send();
 		let packets = vec![
-			Packet { data: vec![0; super::MAX_PACKET_SIZE * 3], reliability: R::ReliableOrdered },
+			Packet { data: Box::new([0; super::MAX_PACKET_SIZE * 3]), reliability: R::ReliableOrdered },
 		];
 		let rak_packets = send.process_outgoing_packets(packets);
 		assert_eq!(rak_packets.len(), 4);

@@ -99,7 +99,7 @@ pub struct RaknetPacket {
 	pub message_number: u32,
 	pub rel_data: ReliabilityData,
 	pub split_packet_info: Option<SplitPacketInfo>,
-	pub data: Vec<u8>,
+	pub data: Box<[u8]>,
 }
 
 impl From<RaknetPacket> for Packet {
@@ -124,7 +124,7 @@ impl<R: std::io::Read> Deserialize<LittleEndian, BitReader<R>> for RaknetPacket 
 			message_number,
 			rel_data,
 			split_packet_info,
-			data,
+			data: data.into_boxed_slice(),
 		})
 	}
 }
@@ -139,6 +139,6 @@ impl<W: std::io::Write> Serialize<LittleEndian, BitWriter<W>> for &RaknetPacket 
 		}
 		writer.write(Compressed::<u16>(self.data.len() as u16 * 8))?;
 		writer.align()?;
-		writer.write(&self.data)
+		writer.write(&*self.data)
 	}
 }
