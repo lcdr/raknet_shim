@@ -165,7 +165,7 @@ fn main() -> Res<()> {
 	};
 
 	let listen_addr = "127.0.0.1:1001".to_socket_addrs().unwrap().next().unwrap();
-	let connect_addr = (&connect_domain[..], 1002).to_socket_addrs().unwrap().next().unwrap();
+	let connect_addr = (&connect_domain[..], 21836).to_socket_addrs().unwrap().next().unwrap();
 
 	let mut addrs = HashMap::new();
 	let mut shims = vec![];
